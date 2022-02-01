@@ -2,8 +2,9 @@ cmake_minimum_required(VERSION 2.8.3)
 project(registration_3d)
 
 
-add_compile_options(-std=c++11)
+#add_compile_options(-std=c++11)
 
+set(CMAKE_CXX_STANDARD 14)
 ## Compile as C++11, supported in ROS Kinetic and newer
 # add_compile_options(-std=c++11)
 
@@ -20,7 +21,7 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
 )
 
-find_package(PCL	REQUIRED)	
+find_package(PCL	REQUIRED)
 
 
 

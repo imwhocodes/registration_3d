@@ -46,6 +46,11 @@
 #include <sensor_msgs/PointCloud2.h>
 #include <pcl/visualization/pcl_visualizer.h>
 
+#include <thread>
+
+using pcl::visualization::PointCloudColorHandlerCustom;
+using pcl::visualization::PointCloudColorHandlerGenericField;
+
 // Nonlinear ICP also uses curvature - crete own Point class with x, y, z, curvature
 class PointCurvature : public pcl::PointRepresentation<pcl::PointNormal>
 {
@@ -102,7 +107,7 @@ class TransformationCalculator final
   Eigen::Matrix4f Ti = Eigen::Matrix4f::Identity();
 
   // Pointcloud-Vector
-  std::vector<pcl::PointCloud<pcl::PointNormal>::Ptr> clouds;
+  std::array<pcl::PointCloud<pcl::PointNormal>::Ptr, 2> clouds;
 
 public:
   int run(int argc, char **argv);
@@ -122,6 +127,7 @@ private:
   void NonlinearIcpAlignment();
   void PublishTransformation();
   void DisplayAlignmentResult();
+  void pcl_shower();
 };
 
 void TransformationCalculator::StartRosNode(int argc, char **argv)
@@ -345,7 +351,7 @@ void TransformationCalculator::PassthroughFilter()
   passthrough_filter.setFilterFieldName("z");
 
   // Set filter from 0.5m to 2.1m
-  passthrough_filter.setFilterLimits(0.5, 2.1);
+  passthrough_filter.setFilterLimits(-3, 3);
 
   // Apply passthrough filter
   for (auto &cloud : clouds)
@@ -561,8 +567,8 @@ void TransformationCalculator::IcpAlignment(pcl::IterativeClosestPoint<pcl::Poin
   point_xyzc.setRescaleValues(weight);
 
   // Maximum distance between two point correspondences - 0.000001 = 10cm
-  icp.setTransformationEpsilon(1e-6);
-  icp.setMaxCorrespondenceDistance(0.3);
+  icp.setTransformationEpsilon(1e-3);
+  icp.setMaxCorrespondenceDistance(3);
 
   // Set PointXYZC as representation inside the registration method
   icp.setPointRepresentation(boost::make_shared<const PointCurvature>(point_xyzc));
@@ -577,15 +583,18 @@ void TransformationCalculator::IcpAlignment(pcl::IterativeClosestPoint<pcl::Poin
   auto source_transformed(clouds.at(0));
 
   // set max iterations per loop
-  icp.setMaximumIterations(2);
+  icp.setMaximumIterations(5);
 
   int icp_loop_count;
   double fitness_score_limit = 0.000; // how well should both point clouds be aligned?
 
   std::cout << "Fitness Score Limit: " << fitness_score_limit << std::endl;
 
+  double last_fitness_value = 0;
+  int same_fitness_value_counter = 0;
+
   // Iterate two times each loop
-  for (icp_loop_count = 1; icp_loop_count <= 30; ++icp_loop_count)
+  for (icp_loop_count = 1; icp_loop_count <= 1000; ++icp_loop_count)
   {
 
     // Estimate the next transformation Ti (only 2 iterations)
@@ -595,23 +604,34 @@ void TransformationCalculator::IcpAlignment(pcl::IterativeClosestPoint<pcl::Poin
     // Accumulate transformation between each Iteration
     Ti = icp.getFinalTransformation() * Ti;
 
-    // reduce distance between correspondending points each time, the resulting transformation Ti is smaller then threshold
-    if (std::abs((icp.getLastIncrementalTransformation() - prev).sum()) < icp.getTransformationEpsilon())
-    {
-      icp.setMaxCorrespondenceDistance(icp.getMaxCorrespondenceDistance() - 0.001);
-    }
+    // // reduce distance between correspondending points each time, the resulting transformation Ti is smaller then threshold
+    // if (std::abs((icp.getLastIncrementalTransformation() - prev).sum()) < icp.getTransformationEpsilon())
+    // {
+    //   icp.setMaxCorrespondenceDistance(icp.getMaxCorrespondenceDistance() - 0.001);
+    // }
 
     // T(i-1)
     prev = icp.getLastIncrementalTransformation();
 
-    if ((icp_loop_count * icp.getMaximumIterations()) % 2 == 0)
-    {
+    const double new_fitness_value = icp.getFitnessScore();
+
+    // if ((icp_loop_count * icp.getMaximumIterations()) % 2 == 0)
+    // {
       // Fitness Score
       std::cout << "Iteration: " << (icp_loop_count * icp.getMaximumIterations())
-                << " - Fitness Score: " << icp.getFitnessScore() << std::endl;
+                << " - Fitness Score: " << new_fitness_value << std::endl;
+    // }
+
+    if(last_fitness_value == new_fitness_value){
+      same_fitness_value_counter++;
+    }
+    else{
+      same_fitness_value_counter = 0;
     }
 
-    if (icp.getFitnessScore() < fitness_score_limit)
+    last_fitness_value = new_fitness_value;
+
+    if (new_fitness_value < fitness_score_limit || same_fitness_value_counter >= 3)
     {
       break;
     }
@@ -702,17 +722,34 @@ void TransformationCalculator::PublishTransformation()
 
 void TransformationCalculator::DisplayAlignmentResult()
 {
-  using pcl::visualization::PointCloudColorHandlerCustom;
-  using pcl::visualization::PointCloudColorHandlerGenericField;
 
-  pcl::visualization::PCLVisualizer *p = new pcl::visualization::PCLVisualizer("alignment result");
+  // PointCloudColorHandlerCustom<pcl::PointNormal> cloud_0_h(clouds[0], 0, 255, 0);
+  // PointCloudColorHandlerCustom<pcl::PointNormal> cloud_1_h(clouds[1], 255, 0, 0);
+
+  // p->updatePointCloud(clouds[0], cloud_0_h, "0");
+  // p->updatePointCloud(clouds[1], cloud_1_h, "1");
+
+}
+
+void TransformationCalculator::pcl_shower(){
+  pcl::visualization::PCLVisualizer viewer("alignment result");
 
   PointCloudColorHandlerCustom<pcl::PointNormal> cloud_0_h(clouds[0], 0, 255, 0);
   PointCloudColorHandlerCustom<pcl::PointNormal> cloud_1_h(clouds[1], 255, 0, 0);
 
-  p->addPointCloud(clouds[0], cloud_0_h, "0");
-  p->addPointCloud(clouds[1], cloud_1_h, "1");
-  p->spin();
+  viewer.addPointCloud(clouds[0], cloud_0_h, "0");
+  viewer.addPointCloud(clouds[1], cloud_1_h, "1");
+
+  while(!viewer.wasStopped()){
+    PointCloudColorHandlerCustom<pcl::PointNormal> cloud_0_h(clouds[0], 0, 255, 0);
+    PointCloudColorHandlerCustom<pcl::PointNormal> cloud_1_h(clouds[1], 255, 0, 0);
+
+    viewer.updatePointCloud(clouds[0], cloud_0_h, "0");
+    viewer.updatePointCloud(clouds[1], cloud_1_h, "1");
+    viewer.spinOnce(100, true);
+  }
+
+
 }
 
 int TransformationCalculator::run(int argc, char **argv)
@@ -724,6 +761,11 @@ int TransformationCalculator::run(int argc, char **argv)
   //  return result;
   //}
   auto result = ProcessArguments(argc, argv);
+
+
+  std::thread plc_window_thread;
+
+  
   if (!result.first)
   {
     return result.second;
@@ -744,6 +786,12 @@ int TransformationCalculator::run(int argc, char **argv)
   {
     SmoothSurfacesMLS();
   }
+
+  if (display_alignment_result)
+  {
+    plc_window_thread = std::thread( [&](){ pcl_shower(); } );
+  }
+
   if (algorithm == AlignmentAlgorithm::fpfh)
   {
     ComputeFPFHFeatures();
@@ -775,7 +823,7 @@ int TransformationCalculator::run(int argc, char **argv)
 
   if (display_alignment_result)
   {
-    DisplayAlignmentResult();
+    plc_window_thread.join();
   }
   if (publishtoros_active)
   {
